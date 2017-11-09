@@ -1,0 +1,6 @@
+<library path="lib/libsimple_layer">
+  <class type="social_navigation_layers::SocialLayer" base_class_type="costmap_2d::Layer">
+    <description>For visualising lane costmap</description>
+  </class>
+</library>
+ 	
