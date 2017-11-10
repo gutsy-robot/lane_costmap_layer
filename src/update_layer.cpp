@@ -1,93 +1,167 @@
-#include <lane_layer/update_layer.h>
-#include <math.h>
-#include <angles/angles.h>
+#include<lane_layer/update_layer.h>
 #include <pluginlib/class_list_macros.h>
 
-using costmap_2d::NO_INFORMATION;
+PLUGINLIB_EXPORT_CLASS(simple_layer_namespace::GridLayer, costmap_2d::Layer)
+
 using costmap_2d::LETHAL_OBSTACLE;
-using costmap_2d::FREE_SPACE;
+using costmap_2d::NO_INFORMATION;
 
-namespace social_navigation_layers
+namespace simple_layer_namespace
 {
-    void SocialLayer::onInitialize()
+
+GridLayer::GridLayer() {}
+
+void GridLayer::onInitialize()
+{
+  ros::NodeHandle nh("~/" + name_);
+  current_ = true;
+  default_value_ = NO_INFORMATION;
+  points_sub_ = nh.subscribe("/people", 1, &GridLayer::stringMessage, this);
+  matchSize();
+
+  dsrv_ = new dynamic_reconfigure::Server<costmap_2d::GenericPluginConfig>(nh);
+  dynamic_reconfigure::Server<costmap_2d::GenericPluginConfig>::CallbackType cb = boost::bind(
+      &GridLayer::reconfigureCB, this, _1, _2);
+  dsrv_->setCallback(cb);
+}
+void GridLayer::stringMessage(const string string_msg)
+{
+    points_msg_ = string_msg;
+    string arr[8];
+    stringstream ssin(points_msg_);
+    int i=0;
+    while (ssin.good() && i < 8){
+        ssin >> arr[i];
+        ++i;
+    }
+    line1[0][0] = stoi(arr[0]);
+    line1[0][1] = stoi(arr[1]);
+    line1[1][0] = stoi(arr[2]);
+    line1[1][1] = stoi(arr[3]);
+    line2[0][0] = stoi(arr[4]);
+    line2[0][1] = stoi(arr[5]);
+    line2[1][0] = stoi(arr[6]);
+    line2[1][1] = stoi(arr[7]);
+
+
+}
+
+
+void GridLayer::matchSize()
+{
+  Costmap2D* master = layered_costmap_->getCostmap();
+  resizeMap(master->getSizeInCellsX(), master->getSizeInCellsY(), master->getResolution(),
+            master->getOriginX(), master->getOriginY());
+}
+
+
+void GridLayer::reconfigureCB(costmap_2d::GenericPluginConfig &config, uint32_t level)
+{
+  enabled_ = config.enabled;
+}
+
+void GridLayer::updateBounds(double robot_x, double robot_y, double robot_yaw, double* min_x,
+                                           double* min_y, double* max_x, double* max_y)
+{
+  if (!enabled_)
+    return;
+
+  // double mark_x = robot_x + cos(robot_yaw), mark_y = robot_y + sin(robot_yaw);
+  if(line1[0][0]==line1[1][0])
+  {
+    for(int i=line1[0][1];i<=line1[1][1];i++)
     {
-        ros::NodeHandle nh("~/" + name_), g_nh;
-        current_ = true;
-        first_time_ = true;
-        people_sub_ = nh.subscribe("/people", 1, &SocialLayer::peopleCallback, this);
+      double mark_x = line1[0][0];
+      double mark_y = i;
+      unsigned int mx;
+      unsigned int my;
+      if(worldToMap(mark_x, mark_y, mx, my)){
+        setCost(mx, my, LETHAL_OBSTACLE);
+      }
+
+      *min_x = std::min(*min_x, mark_x);
+      *min_y = std::min(*min_y, mark_y);
+      *max_x = std::max(*max_x, mark_x);
+      *max_y = std::max(*max_y, mark_y);
     }
+  }
+  else
+  {
+    double slope = (line1[0][1] - line1[1][1]) / (1.0 * (line1[0][0] - line1[1][0]);
+    for(int i = line1[0][0];i<=line1[1][0];i++)
+    {
+      double mark_x = i;
+      double mark_y = slope * (i - line1[0][0]) + line1[0][1];
+      unsigned int mx;
+      unsigned int my;
+      if(worldToMap(mark_x, mark_y, mx, my)){
+        setCost(mx, my, LETHAL_OBSTACLE);
+      }
 
-    void SocialLayer::peopleCallback(const people_msgs::People& people) {
-        boost::recursive_mutex::scoped_lock lock(lock_);
-        people_list_ = people;
+      *min_x = std::min(*min_x, mark_x);
+      *min_y = std::min(*min_y, mark_y);
+      *max_x = std::max(*max_x, mark_x);
+      *max_y = std::max(*max_y, mark_y);
     }
+  }
+  if(line2[0][0]==line2[1][0])
+  {
+    for(int i=line2[0][1];i<=line2[1][1];i++)
+    {
+      double mark_x = line2[0][0];
+      double mark_y = i;
+      unsigned int mx;
+      unsigned int my;
+      if(worldToMap(mark_x, mark_y, mx, my)){
+        setCost(mx, my, LETHAL_OBSTACLE);
+      }
 
-
-    void SocialLayer::updateBounds(double origin_x, double origin_y, double origin_z, double* min_x, double* min_y, double* max_x, double* max_y){
-        boost::recursive_mutex::scoped_lock lock(lock_);
-
-        std::string global_frame = layered_costmap_->getGlobalFrameID();
-        transformed_people_.clear();
-
-        for(unsigned int i=0; i<people_list_.people.size(); i++){
-            people_msgs::Person& person = people_list_.people[i];
-            people_msgs::Person tpt;
-            geometry_msgs::PointStamped pt, opt;
-
-            try{
-              pt.point.x = person.position.x;
-              pt.point.y = person.position.y;
-              pt.point.z = person.position.z;
-              pt.header.frame_id = people_list_.header.frame_id;
-              tf_.transformPoint(global_frame, pt, opt);
-              tpt.position.x = opt.point.x;
-              tpt.position.y = opt.point.y;
-              tpt.position.z = opt.point.z;
-
-              pt.point.x += person.velocity.x;
-              pt.point.y += person.velocity.y;
-              pt.point.z += person.velocity.z;
-              tf_.transformPoint(global_frame, pt, opt);
-
-              tpt.velocity.x = opt.point.x - tpt.position.x;
-              tpt.velocity.y = opt.point.y - tpt.position.y;
-              tpt.velocity.z = opt.point.z - tpt.position.z;
-
-              transformed_people_.push_back(tpt);
-
-            }
-            catch(tf::LookupException& ex) {
-              ROS_ERROR("No Transform available Error: %s\n", ex.what());
-              continue;
-            }
-            catch(tf::ConnectivityException& ex) {
-              ROS_ERROR("Connectivity Error: %s\n", ex.what());
-              continue;
-            }
-            catch(tf::ExtrapolationException& ex) {
-              ROS_ERROR("Extrapolation Error: %s\n", ex.what());
-              continue;
-            }
-        }
-        updateBoundsFromPeople(min_x, min_y, max_x, max_y);
-        if(first_time_){
-            last_min_x_ = *min_x;
-            last_min_y_ = *min_y;
-            last_max_x_ = *max_x;
-            last_max_y_ = *max_y;
-            first_time_ = false;
-        }else{
-            double a = *min_x, b = *min_y, c = *max_x, d = *max_y;
-            *min_x = std::min(last_min_x_, *min_x);
-            *min_y = std::min(last_min_y_, *min_y);
-            *max_x = std::max(last_max_x_, *max_x);
-            *max_y = std::max(last_max_y_, *max_y);
-            last_min_x_ = a;
-            last_min_y_ = b;
-            last_max_x_ = c;
-            last_max_y_ = d;
-
-        }
-
+      *min_x = std::min(*min_x, mark_x);
+      *min_y = std::min(*min_y, mark_y);
+      *max_x = std::max(*max_x, mark_x);
+      *max_y = std::max(*max_y, mark_y);
     }
-};
+  }
+  else
+  {
+    double slope = (line2[0][1] - line2[1][1]) / (1.0 * (line2[0][0] - line2[1][0]);
+    for(int i = line2[0][0];i<=line2[1][0];i++)
+    {
+      double mark_x = i;
+      double mark_y = slope * (i - line2[0][0]) + line2[0][1];
+      unsigned int mx;
+      unsigned int my;
+      if(worldToMap(mark_x, mark_y, mx, my)){
+        setCost(mx, my, LETHAL_OBSTACLE);
+      }
+
+      *min_x = std::min(*min_x, mark_x);
+      *min_y = std::min(*min_y, mark_y);
+      *max_x = std::max(*max_x, mark_x);
+      *max_y = std::max(*max_y, mark_y);
+    }
+  }
+
+
+
+}
+
+void GridLayer::updateCosts(costmap_2d::Costmap2D& master_grid, int min_i, int min_j, int max_i,
+                                          int max_j)
+{
+  if (!enabled_)
+    return;
+
+  for (int j = min_j; j < max_j; j++)
+  {
+    for (int i = min_i; i < max_i; i++)
+    {
+      int index = getIndex(i, j);
+      if (costmap_[index] == NO_INFORMATION)
+        continue;
+      master_grid.setCost(i, j, costmap_[index]);
+    }
+  }
+}
+
+} // end namespace
